@@ -1,0 +1,51 @@
+// Job 2: pull Docker-image with teg in registry and start conteiner in prod node.
+// Variables in jenkins/pipeline.env
+def loadEnvFile(String path) {
+    def cfg = [:]
+    readFile(path).split('\n').each { line ->
+        line = line.trim()
+        if (line && !line.startsWith('#') && line.contains('=')) {
+            def i = line.indexOf('=')
+            cfg[line.substring(0, i).trim()] = line.substring(i + 1).trim()
+        }
+    }
+    return cfg
+}
+
+properties([parameters([
+    string(name: 'IMAGE_TAG', defaultValue: '', description: 'Тег образа для деплоя (пусто = IMAGE_TAG из pipeline.env)')
+])])
+
+def cfg
+node {
+    checkout scm
+    cfg = loadEnvFile('jenkins/pipeline.env')
+}
+
+node(cfg.PROD_NODE_LABEL) {
+    def tag = params.IMAGE_TAG ?: cfg.IMAGE_TAG
+    def image = "${cfg.REGISTRY}/${cfg.IMAGE_NAME}:${tag}"
+
+    stage('Pull image') {
+        withCredentials([usernamePassword(credentialsId: cfg.REGISTRY_CREDENTIALS_ID,
+                usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
+            sh """
+                echo "\$REG_PASS" | docker login '${cfg.REGISTRY}' -u "\$REG_USER" --password-stdin
+                docker pull '${image}'
+                docker logout '${cfg.REGISTRY}'
+            """
+        }
+    }
+    stage('Run container') {
+        sh """
+            docker rm -f '${cfg.CONTAINER_NAME}' || true
+            docker run -d --name '${cfg.CONTAINER_NAME}' \\
+                --restart '${cfg.RESTART_POLICY}' \\
+                -p '${cfg.HOST_PORT}:${cfg.CONTAINER_PORT}' \\
+                '${image}'
+        """
+    }
+    stage('Check') {
+        sh "sleep 10; curl -fsS http://${cfg.HEALTH_HOST}:${cfg.HOST_PORT}/"
+    }
+}
